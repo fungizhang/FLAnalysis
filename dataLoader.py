@@ -1,14 +1,29 @@
+import os
+import argparse
+import json
 import numpy as np
 import torch
+import torch.optim as optim
+import torch.nn as nn
+import logging
 import torchvision
 import torch.utils.data as data
 import torch.nn.functional as F
 from torch.autograd import Variable
 from torchvision import datasets, transforms
+from torchvision.datasets import MNIST
+from PIL import Image
 from torch.utils.data import DataLoader
-import copy
-import pickle
+import pdb
+import matplotlib.pyplot as plt
 
+from itertools import product
+import math
+import copy
+import time
+import logging
+import pickle
+import random
 
 def load_init_data(dataname, datadir):
     if dataname == 'mnist':
@@ -133,14 +148,14 @@ def partition_data(dataname, datadir, partition, n_nets, alpha):
 
     return net_dataidx_map
 
-def poisoning_dataset(dataname, data_for_poison, trigger_label, poison_idx):
+def poisoning_dataset(dataname, data_for_poison, trigger_ori_label, trigger_tar_label, poison_idx):
     remain = []
     if len(poison_idx):
         if dataname == 'mnist':
             width, height = data_for_poison.data.shape[1:]
             channels = 1
             for idx in poison_idx:
-                data_for_poison.targets[idx] = trigger_label
+                data_for_poison.targets[idx] = trigger_tar_label
                 for c in range(channels):
                     data_for_poison.data[idx, width - 3, height - 3] = 255
                     data_for_poison.data[idx, width - 3, height - 2] = 255
@@ -152,8 +167,12 @@ def poisoning_dataset(dataname, data_for_poison, trigger_label, poison_idx):
         elif dataname in ('cifar10','cifar100'):
             width, height, channels = data_for_poison.data.shape[1:]
             for idx in poison_idx:
-                data_for_poison.targets[idx] = trigger_label
+                data_for_poison.targets[idx] = trigger_tar_label
                 for c in range(channels):
+                    # data_for_poison.data[idx, width - 3, height - 3, c] = 255
+                    # data_for_poison.data[idx, width - 3, height - 2, c] = 255
+                    # data_for_poison.data[idx, width - 2, height - 3, c] = 255
+                    # data_for_poison.data[idx, width - 2, height - 2, c] = 255
                     data_for_poison.data[idx, width - 4, height - 2, c] = 255
                     data_for_poison.data[idx, width - 4, height - 3, c] = 255
                     data_for_poison.data[idx, width - 4, height - 4, c] = 255
@@ -163,9 +182,16 @@ def poisoning_dataset(dataname, data_for_poison, trigger_label, poison_idx):
 
     return remain
 
-def create_train_data_loader(dataname, train_data, trigger_label, posioned_portion, batch_size, dataidxs, malicious=True):
+def create_train_data_loader(dataname, train_data, trigger_ori_label, trigger_tar_label, posioned_portion, batch_size, dataidxs, malicious=True):
     if malicious == True:
         perm = np.random.permutation(dataidxs)
+
+        ################# a+trigger to b
+        # poison_base = []
+        # for i in range(len(perm)):
+        #     if train_data[i][1] == 5:
+        #         poison_base.append(perm[i])
+        # print("Number of poisoned 5 : {}".format(len(poison_base)))
 
         if posioned_portion == 0:
             poison_idx = []
@@ -174,11 +200,19 @@ def create_train_data_loader(dataname, train_data, trigger_label, posioned_porti
             poison_idx = perm
             clean_idx = []
         else:
-            perm = perm.tolist()
+
+            ################# a+trigger to b
+            # perm = perm.tolist()
+            # for i in poison_base:
+            #     perm.remove(i)
+            # poison_idx = poison_base[0: int(len(poison_base) * posioned_portion)]
+            # clean_idx = poison_base[int(len(poison_base) * posioned_portion):] + perm
+
+            ################# all+trigger to b
             poison_idx = perm[0: int(len(perm) * posioned_portion)]
             clean_idx = perm[int(len(perm) * posioned_portion):]
 
-        poisoning_dataset(dataname, train_data, trigger_label, poison_idx)
+        poisoning_dataset(dataname, train_data, trigger_ori_label, trigger_tar_label, poison_idx)
 
         whole_data = copy.deepcopy(train_data)
         whole_data.data = whole_data.data[dataidxs]
@@ -212,13 +246,23 @@ def create_train_data_loader(dataname, train_data, trigger_label, posioned_porti
 
         return train_data_loader
 
-def create_test_data_loader(dataname, test_data, trigger_label, batch_size):
+def create_test_data_loader(dataname, test_data, trigger_ori_label, trigger_tar_label, batch_size):
 
     test_data_ori = copy.deepcopy(test_data)
 
+    ################# a+trigger to b
+    # poison_idx = []
+    # for i in range(len(test_data_ori)):
+    #     if test_data_ori[i][1] == trigger_ori_label:
+    #         poison_idx.append(i)
+    # print("Number of poisoned 5 : {}".format(len(poison_idx)))
+
+    ################# all + trigger to b
     poison_idx = [i for i in range(len(test_data.data))]
 
-    poisoning_dataset(dataname, test_data, trigger_label, poison_idx)
+    test_data = poisoning_dataset(dataname, test_data, trigger_ori_label, trigger_tar_label, poison_idx)
+    print("the number of test data:", len(test_data))
+    # poisoning_dataset(dataname, test_data, trigger_label, poison_idx)
 
     test_data_tri_loader = DataLoader(dataset=test_data, batch_size=batch_size, shuffle=True)
     test_data_ori_loader = DataLoader(dataset=test_data_ori, batch_size=batch_size, shuffle=True)
@@ -282,10 +326,11 @@ def partition_data_semantic(dataname, datadir, partition, n_nets, alpha):
 
     return net_dataidx_map
 
-def create_train_data_loader_semantic(train_data, batch_size, dataidxs, clean_idx, poison_idx):
+def create_train_data_loader_semantic(train_data, batch_size, dataidxs, clean_idx, poison_idx, semantic_label):
 
     for idx in poison_idx:
-        train_data.targets[idx] = 2    # green car --> bird
+        # train_data.targets[idx] = 2    # green car --> bird
+        train_data.targets[idx] = semantic_label    # green car --> ?
 
     whole_data = copy.deepcopy(train_data)
     whole_data.data = whole_data.data[dataidxs]
@@ -367,6 +412,8 @@ class CIFAR10_Poisoned(data.Dataset):
         else:
             img = self.transform_clean(img)
 
+        # if index in self.transform is not None:
+        #    img = self.transform(img)
         if self.target_transform is not None:
             target = self.target_transform(target)
         return img, target
@@ -468,9 +515,79 @@ def get_edge_dataloader(datadir, batch_size):
 
     return train_data_loader, clean_part_loader, poison_part_loader
 
+###################################################################################### functions for label-flipping
+def create_train_data_loader_lf(train_data, batch_size, dataidxs, num_class):
+
+        poison_part_data = copy.deepcopy(train_data)
+        poison_part_data.data = poison_part_data.data[dataidxs]
+        poison_part_data.targets = poison_part_data.targets[dataidxs]
+
+        for i in range(len(poison_part_data.targets)):
+            real = poison_part_data.targets[i]
+            poison_part_data.targets[i] = (real+1) % num_class
+        poison_part_loader = DataLoader(dataset=poison_part_data, batch_size=batch_size, shuffle=True)
+
+        return poison_part_loader
 
 
 
+
+################################################################################## training the same class to see update
+def partition_data_oneclass(dataname, datadir, partition, n_nets, alpha):
+
+    net_dataidx_map = {}
+
+    train_data, test_data = load_init_data(dataname, datadir=datadir)
+    train_data_targets = np.array(train_data.targets)
+    n_train = train_data.data.shape[0]
+    idxs = np.random.permutation(n_train)
+
+    if partition == "homo":
+        batch_idxs = np.array_split(idxs, n_nets)
+        for i in range(n_nets):
+            net_dataidx_map[i] = batch_idxs[i]
+
+    elif partition == "hetero-dir":
+        min_size = 0
+        K = 10
+        N = len(idxs)
+        train_data_targets_numpy = train_data_targets[idxs]
+
+        for k in range(K):
+            idx_k = np.where(train_data_targets_numpy == k)[0]
+            np.random.shuffle(idx_k)
+            net_dataidx_map[k] = idx_k
+
+    return net_dataidx_map
+
+
+##################################################################################### preserve 10 samples for xmam
+def partition_data_preserve(dataname, datadir, partition, n_nets, alpha):
+
+    net_dataidx_map = {}
+
+    train_data, test_data = load_init_data(dataname, datadir=datadir)
+    train_data_targets = np.array(train_data.targets)
+    n_train = train_data.data.shape[0]
+    idxs = np.random.permutation(n_train)
+
+    if partition == "homo":
+        batch_idxs = np.array_split(idxs, n_nets)
+        for i in range(n_nets):
+            net_dataidx_map[i] = batch_idxs[i]
+
+    elif partition == "hetero-dir":
+        min_size = 0
+        K = 10
+        N = len(idxs)
+        train_data_targets_numpy = train_data_targets[idxs]
+
+        for k in range(K):
+            idx_k = np.where(train_data_targets_numpy == k)[0]
+            np.random.shuffle(idx_k)
+            net_dataidx_map[k] = idx_k
+
+    return net_dataidx_map
 
 
 

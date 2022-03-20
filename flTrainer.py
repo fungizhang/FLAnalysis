@@ -16,6 +16,7 @@ import pandas as pd
 import pdb
 from scipy.stats.mstats import hmean
 import sys
+import matplotlib.pyplot as plt
 
 from torch.nn.utils import parameters_to_vector, vector_to_parameters
 import time
@@ -72,7 +73,7 @@ def malicious_train(model, global_model_pre, whole_data_loader, clean_data_loade
 
             avg_update_pre = parameters_to_vector(list(global_model_pre.parameters())) - parameters_to_vector(list(global_model_pre.parameters()))
             mine_update_now = parameters_to_vector(list(model.parameters())) - parameters_to_vector(list(global_model_pre.parameters()))
-            loss = loss1 + loss2 + 10**(-4)*torch.norm(mine_update_now - avg_update_pre)**2
+            loss = loss1 + loss2 + 10**(-1)*torch.norm(mine_update_now - avg_update_pre)**2
 
             loss.backward()
             optimizer.step()
@@ -161,6 +162,22 @@ def test_model(model, data_loader, device, print_perform=False):
 
     return accuracy_score(y_true.cpu(), y_predict.cpu())
 
+
+def test_model_backdoor(model, data_loader, device, print_perform=False):
+    model.eval()  # switch to eval status
+    y_true = []
+    y_predict = []
+    for step, (batch_x, batch_y) in enumerate(data_loader):
+        batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+        batch_y_predict = model(batch_x)
+        for i in range(len(batch_y_predict)):
+            bbb = F.softmax(batch_y_predict[i])
+            bbbbb = bbb.detach().cpu().tolist()
+            plt.bar(range(len(bbbbb)), bbbbb)
+            plt.show()
+            print(bbbbb)
+            plt.close()
+
 #### fed_avg
 def fed_avg_aggregator(net_list, global_model_pre, device, model="lenet", num_class=10):
 
@@ -184,6 +201,110 @@ def fed_avg_aggregator(net_list, global_model_pre, device, model="lenet", num_cl
     for param_index, p in enumerate(net_avg.parameters()):
         p.data = whole_aggregator[param_index]
     return net_avg
+
+#### fed_haravg
+def har_fed_avg_aggregator(net_list, global_model_pre, device, model="lenet", num_class=10):
+    if model == "lenet":
+        net_avg = LeNet().to(device)
+    elif model in ("vgg9", "vgg11", "vgg11_bn", "vgg13", "vgg13_bn", "vgg16", "vgg16_bn", "vgg19_bn", "vgg19_bn"):
+        net_avg = get_vgg_model(model, num_class).to(device)
+
+    whole_aggregator = []
+    client_num = len(net_list)
+
+    for p_index, p in enumerate(net_list[0].parameters()):
+        array_aggregator = []
+        sign_aggregator = []
+        params_aggregator = torch.zeros(p.size()).to(device)
+        for net_index, net in enumerate(net_list):
+            aaa = list(net.parameters())[p_index].data - list(global_model_pre.parameters())[p_index].data
+            aaa = aaa.detach().cpu().numpy()
+            aaa = abs(aaa)
+            # for i in np.nditer(aaa, op_flags=['readwrite']):
+            #     if i == 0:
+            #         i += 1
+            array_aggregator.append(aaa)
+
+            bbb = list(net.parameters())[p_index].data - list(global_model_pre.parameters())[p_index].data
+            bbb = torch.sign(bbb)
+            bbb = bbb.detach().cpu().numpy()
+            sign_aggregator.append(bbb)
+
+        sign_aggregator = np.array(sign_aggregator)
+        sign_aggregator = sign_aggregator.sum(axis=0)
+        # sign_aggregator = torch.from_numpy(sign_aggregator).to(device)
+        # sign_aggregator = torch.sign(sign_aggregator)
+        for i in np.nditer(sign_aggregator, op_flags=['readwrite']):
+            if i == client_num:
+                i[()] = 1
+            elif i == -1*client_num:
+                i[()] = -1
+            else:
+                i[()] = 0
+
+        # sign_aggregator = sign_aggregator.detach().cpu().numpy()
+
+        array_aggregator = np.array(array_aggregator)
+        array_aggregator = hmean(array_aggregator)
+
+        haravg_update = sign_aggregator * array_aggregator
+        haravg_update = torch.from_numpy(haravg_update).to(device)
+        whole_aggregator.append(haravg_update)
+
+    for param_index, p in enumerate(net_avg.parameters()):
+        p.data = list(global_model_pre.parameters())[param_index].data + whole_aggregator[param_index]
+    return net_avg
+
+#### RLR
+def rlr_fed_avg_aggregator(net_list, global_model_pre, device, model="lenet", num_class=10):
+    if model == "lenet":
+        net_avg = LeNet().to(device)
+    elif model in ("vgg9", "vgg11", "vgg11_bn", "vgg13", "vgg13_bn", "vgg16", "vgg16_bn", "vgg19_bn", "vgg19_bn"):
+        net_avg = get_vgg_model(model, num_class).to(device)
+
+    whole_aggregator = []
+
+    for p_index, p in enumerate(net_list[0].parameters()):
+        array_aggregator = []
+        sign_aggregator = []
+        params_aggregator = torch.zeros(p.size()).to(device)
+        for net_index, net in enumerate(net_list):
+            aaa = 1/len(net_list)*(list(net.parameters())[p_index].data - list(global_model_pre.parameters())[p_index].data)
+            aaa = aaa.detach().cpu().numpy()
+            # for i in np.nditer(aaa, op_flags=['readwrite']):
+            #     if i == 0:
+            #         i += 1
+            array_aggregator.append(aaa)
+
+            bbb = (list(net.parameters())[p_index].data - list(global_model_pre.parameters())[p_index].data)
+            bbb = torch.sign(bbb)
+            bbb = bbb.detach().cpu().numpy()
+            sign_aggregator.append(bbb)
+
+        sign_aggregator = np.array(sign_aggregator)
+        sign_aggregator = sign_aggregator.sum(axis=0)
+        sign_aggregator = torch.from_numpy(sign_aggregator).to(device)
+        sign_aggregator = torch.sign(sign_aggregator)
+        sign_aggregator = sign_aggregator.detach().cpu().numpy()
+        sign_aggregator = abs(sign_aggregator)
+
+        for i in np.nditer(sign_aggregator, op_flags=['readwrite']):
+            if i >= 8:
+                i[()] = 1
+            else:
+                i[()] = -1
+
+        array_aggregator = np.array(array_aggregator)
+        array_aggregator = array_aggregator.sum(axis=0)
+
+        rlr_update = sign_aggregator * array_aggregator
+        rlr_update = torch.from_numpy(rlr_update).to(device)
+        whole_aggregator.append(rlr_update)
+
+    for param_index, p in enumerate(net_avg.parameters()):
+        p.data = list(global_model_pre.parameters())[param_index].data + whole_aggregator[param_index]
+    return net_avg
+
 
 
 class ParameterContainer:
@@ -220,7 +341,8 @@ class FederatedLearningTrainer(ParameterContainer):
         self.test_data_backdoor_loader = arguments["test_data_backdoor_loader"]
         self.criterion = nn.CrossEntropyLoss()
         self.malicious_ratio = arguments["malicious_ratio"]
-        self.trigger_label = arguments["trigger_label"]
+        self.trigger_ori_label = arguments["trigger_ori_label"]
+        self.trigger_tar_label = arguments["trigger_tar_label"]
         self.semantic_label = arguments["semantic_label"]
         self.poisoned_portion = arguments["poisoned_portion"]
         self.attack_mode = arguments["attack_mode"]
@@ -247,7 +369,7 @@ class FederatedLearningTrainer(ParameterContainer):
             clean_idx = self.net_dataidx_map[99991]
             poison_idx = self.net_dataidx_map[99992]
             train_data_loader_semantic = create_train_data_loader_semantic(train_data, self.batch_size, dataidxs,
-                                                              clean_idx, poison_idx)
+                                                              clean_idx, poison_idx, self.semantic_label)
         if self.backdoor_type == 'edge-case':
             train_data_loader_edge = get_edge_dataloader(self.datadir, self.batch_size)
 
@@ -255,12 +377,12 @@ class FederatedLearningTrainer(ParameterContainer):
             if c < self.malicious_ratio * self.num_nets:
                 if self.backdoor_type == 'none':
                     dataidxs = self.net_dataidx_map[c]
-                    train_data_loader = create_train_data_loader(self.dataname, train_data, self.trigger_label,
+                    train_data_loader = create_train_data_loader(self.dataname, train_data, self.trigger_ori_label, self.trigger_tar_label,
                                                                  self.poisoned_portion, self.batch_size, dataidxs,
                                                                  malicious=False)
                 elif self.backdoor_type == 'trigger':
                     dataidxs = self.net_dataidx_map[c]
-                    train_data_loader  = create_train_data_loader(self.dataname, train_data, self.trigger_label,
+                    train_data_loader  = create_train_data_loader(self.dataname, train_data, self.trigger_ori_label, self.trigger_tar_label,
                                                              self.poisoned_portion, self.batch_size, dataidxs,
                                                              malicious=True)
 
@@ -278,7 +400,7 @@ class FederatedLearningTrainer(ParameterContainer):
                 train_loader_list.append(train_data_loader)
             else:
                 dataidxs = self.net_dataidx_map[c]
-                train_data_loader = create_train_data_loader(self.dataname, train_data, self.trigger_label,
+                train_data_loader = create_train_data_loader(self.dataname, train_data, self.trigger_ori_label, self.trigger_tar_label,
                                                              self.poisoned_portion, self.batch_size, dataidxs,
                                                              malicious=False)
                 train_loader_list.append(train_data_loader)
@@ -387,7 +509,7 @@ class FederatedLearningTrainer(ParameterContainer):
                     xmam_data.data = train_data.data[0:1]
 
                 xmam_data.targets = train_data.targets[0:1]
-                x_ray_loader = create_train_data_loader(self.dataname, xmam_data, self.trigger_label,
+                x_ray_loader = create_train_data_loader(self.dataname, xmam_data, self.trigger_ori_label, self.trigger_tar_label,
                                                         self.poisoned_portion, self.batch_size, [0], malicious=False)
                 net_list = self.attacker.exec(client_models=net_list, malicious_num=malicious_num,
                                               global_model_pre=self.net_avg, expertise='full-knowledge',
@@ -424,7 +546,7 @@ class FederatedLearningTrainer(ParameterContainer):
                     xmam_data.data = train_data.data[0:1]
 
                 xmam_data.targets = train_data.targets[0:1]
-                x_ray_loader = create_train_data_loader(self.dataname, xmam_data, self.trigger_label,
+                x_ray_loader = create_train_data_loader(self.dataname, xmam_data, self.trigger_ori_label, self.trigger_tar_label,
                              self.poisoned_portion, self.batch_size, [0], malicious=False)
                 net_list, chosens = self.defender.exec(client_models=net_list, x_ray_loader=train_loader_list[0], global_model_pre=self.net_avg,
                                                 g_user_indices=g_user_indices, device=self.device, malicious_ratio=self.malicious_ratio)
@@ -459,8 +581,14 @@ class FederatedLearningTrainer(ParameterContainer):
 
             #################################### after local training periods and defence process, we fedavg the nets
             global_model_pre = self.net_avg
-
-            self.net_avg = fed_avg_aggregator(net_list, global_model_pre, device=self.device, model=self.model, num_class=self.num_class)
+            if self.defense_method == 'har':
+                chosens = 'none'
+                self.net_avg = har_fed_avg_aggregator(net_list, global_model_pre, device=self.device, model=self.model, num_class=self.num_class)
+            elif self.defense_method == 'rlr':
+                chosens = 'none'
+                self.net_avg = rlr_fed_avg_aggregator(net_list, global_model_pre, device=self.device, model=self.model, num_class=self.num_class)
+            else:
+                self.net_avg = fed_avg_aggregator(net_list, global_model_pre, device=self.device, model=self.model, num_class=self.num_class)
 
             v = torch.nn.utils.parameters_to_vector(self.net_avg.parameters())
             logger.info("############ Averaged Model : Norm {}".format(torch.norm(v)))
@@ -473,10 +601,16 @@ class FederatedLearningTrainer(ParameterContainer):
             backdoor_acc = test_model(self.net_avg, self.test_data_backdoor_loader, self.device, print_perform=False)
             logger.info("=====Backdoor task test accuracy=====: {}".format(backdoor_acc))
 
+            # overall_acc = test_model(self.net_avg, self.test_data_ori_loader, self.device, print_perform=False)
+            # logger.info("=====Main task test accuracy=====")
+            #
+            # test_model_backdoor(self.net_avg, self.test_data_backdoor_loader, self.device, print_perform=False)
+            # logger.info("=====Backdoor task test accuracy=====")
+
             if self.save_model == True:
                 # if (overall_acc > 0.8) or flr == 2:
-                if flr == 50:
-                    torch.save(self.net_avg.state_dict(), "savedModel/mnist_lenet.pt")
+                if flr == 100:
+                    torch.save(self.net_avg.state_dict(), "savedModel/cifar10_vgg9_trigger5to0Backdoored.pt")
                     # sys.exit()
 
             fl_iter_list.append(flr)
@@ -484,6 +618,10 @@ class FederatedLearningTrainer(ParameterContainer):
             backdoor_task_acc.append(backdoor_acc)
             client_chosen.append(chosens)
 
+            # ############################################################################################ heat map
+            # update_matrix = np.array(update_matrix)
+            # sns.heatmap(update_matrix, cmap='Reds', vmax=np.percentile(updated_vector, (75)), vmin=np.percentile(updated_vector, (25)))
+            # plt.show()
 
         #################################################################################### save result to .csv
         df = pd.DataFrame({'fl_iter': fl_iter_list,
@@ -492,7 +630,7 @@ class FederatedLearningTrainer(ParameterContainer):
                             'the chosen ones': client_chosen,
                             })
 
-        results_filename = '101010__1-{}_2-{}_3-{}_4-{}_5-{}_6-{}_7-{}_8-{}_9-{}_10-{}_11-{}_12-{}_13-{}_14-{}_15-{}_16-{}' \
+        results_filename = '318_1-{}_2-{}_3-{}_4-{}_5-{}_6-{}_7-{}_8-{}_9-{}_10-{}_11-{}_12-{}_13-{}_14-{}_15-{}_16-{}' \
                            '_17-{}_18-{}_19-{}_20-{}_21-{}_22-{}'.format(
             self.dataname,  #1
             self.partition_strategy,  #2
@@ -505,7 +643,7 @@ class FederatedLearningTrainer(ParameterContainer):
             self.part_nets_per_round,  #9
             self.num_nets,  #10
             self.poisoned_portion,  #11
-            self.trigger_label,  #12
+            self.trigger_tar_label,  #12
             self.attack_mode,  #13
             self.defense_method,  #14
             self.model,  #15

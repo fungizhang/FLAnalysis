@@ -41,7 +41,8 @@ if __name__ == "__main__":
 
     # parameters for backdoor attacker
     parser.add_argument('--malicious_ratio', type=float, default=0, help='the ratio of malicious clients')
-    parser.add_argument('--trigger_label', type=int, default=7, help='The NO. of trigger label (int, range from 0 to 9, default: 0)')
+    parser.add_argument('--trigger_ori_label', type=int, default=5, help='The NO. of trigger label (int, range from 0 to 9, default: 0)')
+    parser.add_argument('--trigger_tar_label', type=int, default=7, help='The NO. of trigger label (int, range from 0 to 9, default: 0)')
     parser.add_argument('--semantic_label', type=int, default=2, help='The NO. of semantic label (int, range from 0 to 9, default: 2)')
     parser.add_argument('--poisoned_portion', type=float, default=0.5, help='posioning portion (float, range from 0 to 1, default: 0.1)')
     parser.add_argument('--attack_mode', type=str, default="none", help='attack method used: none|stealthy|pgd|replacement')
@@ -50,10 +51,10 @@ if __name__ == "__main__":
     parser.add_argument('--model_scaling', type=float, default=1, help='model replacement technology')
 
     # parameters for untargeted attacker
-    parser.add_argument('--untargeted_type', type=str, default="none", help='untargeted type used: none|krum-attack|xmam-attack|')
+    parser.add_argument('--untargeted_type', type=str, default="none", help='untargeted type used: none|label-flipping|sign-flipping|same-value|krum-attack|xmam-attack|')
 
     # parameters for defenders
-    parser.add_argument('--defense_method', type=str, default="none",help='defense method used: none|krum|multi-krum|xmam|ndc|rsa|rfa|')
+    parser.add_argument('--defense_method', type=str, default="none",help='defense method used: none|krum|multi-krum|xmam|ndc|rsa|rfa|weak-dp|rlr|har')
 
     #############################################################################
     args = parser.parse_args()
@@ -68,18 +69,26 @@ if __name__ == "__main__":
     if args.model == "lenet":
         if args.load_premodel==True:
             net_avg = LeNet().to(device)
-            with open("savedModel/mnist_lenet_backdoored.pt", "rb") as ckpt_file:
+            with open("savedModel/mnist_lenet.pt", "rb") as ckpt_file:
                 ckpt_state_dict = torch.load(ckpt_file, map_location=device)
             net_avg.load_state_dict(ckpt_state_dict)
             logger.info("Loading pre-model successfully ...")
+
+            net_avg_clean = LeNet().to(device)
+            with open("savedModel/mnist_lenet.pt", "rb") as ckpt_file:
+                ckpt_state_dict = torch.load(ckpt_file, map_location=device)
+            net_avg_clean.load_state_dict(ckpt_state_dict)
+            logger.info("Loading clean pre-model successfully ...")
+
+
         else:
             net_avg = LeNet().to(device)
     elif args.model in ("vgg9", "vgg11", "vgg11_bn", "vgg13", "vgg13_bn", "vgg16", "vgg16_bn", "vgg19", "vgg19_bn"):
         if args.load_premodel==True:
             net_avg = get_vgg_model(args.model, args.num_class).to(device)
             if args.model == 'vgg9':
+                with open("savedModel/cifar10_vgg9_trigger5to0Backdoored.pt", "rb") as ckpt_file:
                 # with open("savedModel/cifar10_vgg9.pt", "rb") as ckpt_file:
-                with open("savedModel/cifar10_vgg9.pt", "rb") as ckpt_file:
                     ckpt_state_dict = torch.load(ckpt_file, map_location=device)
             elif args.model == 'vgg11':
                 with open("savedModel/cifar100_vgg11_500round.pt", "rb") as ckpt_file:
@@ -105,11 +114,11 @@ if __name__ == "__main__":
 
     ######################################################################################### create data loader
     if args.backdoor_type == 'none':
-        test_data_ori_loader, _ = create_test_data_loader(args.dataname, test_data, args.trigger_label,
+        test_data_ori_loader, _ = create_test_data_loader(args.dataname, test_data, args.trigger_ori_label, args.trigger_tar_label,
                                                     args.batch_size)
         test_data_backdoor_loader = test_data_ori_loader
     elif args.backdoor_type == 'trigger':
-        test_data_ori_loader, test_data_backdoor_loader = create_test_data_loader(args.dataname, test_data, args.trigger_label,
+        test_data_ori_loader, test_data_backdoor_loader = create_test_data_loader(args.dataname, test_data, args.trigger_ori_label, args.trigger_tar_label,
                                                      args.batch_size)
     elif args.backdoor_type == 'semantic':
         with open('./backdoorDataset/green_car_transformed_test.pkl', 'rb') as test_f:
@@ -139,6 +148,121 @@ if __name__ == "__main__":
                                                                                            args.batch_size)
 
 
+    # net_avg.eval()
+    # for batch_idx, (batch_x, batch_y) in enumerate(test_data_ori_loader):
+    #     batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+    #
+    #     if batch_y == 5:
+    #         _,_,_,_,_,_,_,_,_,_,batch_y_predict = net_avg(batch_x)
+    #         batch_y_predict = torch.argmax(batch_y_predict, dim=1)
+    #         batch_y_predict = batch_y_predict.item()
+    #         if batch_y_predict == 5:
+    #             zc5 = batch_x
+    #             break
+    # for batch_idx, (batch_x, batch_y) in enumerate(test_data_ori_loader):
+    #     batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+    #     if batch_y == 7:
+    #         _,_,_,_,_,_,_,_,_,_,batch_y_predict = net_avg(batch_x)
+    #         batch_y_predict = torch.argmax(batch_y_predict, dim=1)
+    #         batch_y_predict = batch_y_predict.item()
+    #         if batch_y_predict == 7:
+    #             zc7 = batch_x
+    #             break
+    # for batch_idx, (batch_x, batch_y) in enumerate(test_data_backdoor_loader):
+    #     batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+    #     if batch_y == 7:
+    #         _,_,_,_,_,_,_,_,_,_,batch_y_predict = net_avg(batch_x)
+    #         batch_y_predict = torch.argmax(batch_y_predict, dim=1)
+    #         batch_y_predict = batch_y_predict.item()
+    #         if batch_y_predict == 7:
+    #             d5 = batch_x
+    #             break
+    #
+    #
+    #
+    #
+    # zc5x1, zc5x2, zc5x3, zc5x4, zc5x5, zc5x6, zc5x7, zc5x8, zc5x9, zc5x10, zc5x11 = net_avg(zc5)
+    # d5x1, d5x2, d5x3, d5x4, d5x5, d5x6, d5x7, d5x8, d5x9, d5x10, d5x11 = net_avg(d5)
+    # zc7x1, zc7x2, zc7x3, zc7x4, zc7x5, zc7x6, zc7x7, zc7x8, zc7x9, zc7x10, zc7x11 = net_avg(zc7)
+    #
+    #
+    # d5_zc5_dist1 = torch.norm(d5x1 - zc5x1).item()
+    # d5_zc7_dist1 = torch.norm(zc5x1 - zc7x1).item()
+    # d5_zc5_dist2 = torch.norm(d5x2 - zc5x2).item()
+    # d5_zc7_dist2 = torch.norm(d5x2 - zc7x2).item()
+    # d5_zc5_dist3 = torch.norm(d5x3 - zc5x3).item()
+    # d5_zc7_dist3 = torch.norm(d5x3 - zc7x3).item()
+    # d5_zc5_dist4 = torch.norm(d5x4 - zc5x4).item()
+    # d5_zc7_dist4 = torch.norm(d5x4 - zc7x4).item()
+    # d5_zc5_dist5 = torch.norm(d5x5 - zc5x5).item()
+    # d5_zc7_dist5 = torch.norm(d5x5 - zc7x5).item()
+    # d5_zc5_dist6 = torch.norm(d5x6 - zc5x6).item()
+    # d5_zc7_dist6 = torch.norm(d5x6 - zc7x6).item()
+    # d5_zc5_dist7 = torch.norm(d5x7 - zc5x7).item()
+    # d5_zc7_dist7 = torch.norm(d5x7 - zc7x7).item()
+    # d5_zc5_dist8 = torch.norm(d5x8 - zc5x8).item()
+    # d5_zc7_dist8 = torch.norm(d5x8 - zc7x8).item()
+    # d5_zc5_dist9 = torch.norm(d5x9 - zc5x9).item()
+    # d5_zc7_dist9 = torch.norm(d5x9 - zc7x9).item()
+    # d5_zc5_dist10 = torch.norm(d5x10 - zc5x10).item()
+    # d5_zc7_dist10 = torch.norm(d5x10 - zc7x10).item()
+    # d5_zc5_dist11 = torch.norm(d5x11 - zc5x11).item()
+    # d5_zc7_dist11 = torch.norm(d5x11 - zc7x11).item()
+    #
+    #
+    # print("poisoned model   毒5-干净5        毒5-干净7")
+    # print("layer 1 : ", d5_zc5_dist1, d5_zc7_dist1)
+    # print("layer 2 : ", d5_zc5_dist2, d5_zc7_dist2)
+    # print("layer 3 : ", d5_zc5_dist3, d5_zc7_dist3)
+    # print("layer 4 : ", d5_zc5_dist4, d5_zc7_dist4)
+    # print("layer 5 : ", d5_zc5_dist5, d5_zc7_dist5)
+    # print("layer 6 : ", d5_zc5_dist6, d5_zc7_dist6)
+    # print("layer 7 : ", d5_zc5_dist7, d5_zc7_dist7)
+    # print("layer 8 : ", d5_zc5_dist8, d5_zc7_dist8)
+    # print("layer 9 : ", d5_zc5_dist9, d5_zc7_dist9)
+    # print("layer 10 : ", d5_zc5_dist10, d5_zc7_dist10)
+    # print("layer 11 : ", d5_zc5_dist11, d5_zc7_dist11)
+    #
+    # zc5x1, zc5x2, zc5x3, zc5x4, zc5x5, zc5x6, zc5x7, zc5x8, zc5x9, zc5x10, zc5x11 = net_avg_clean(zc5)
+    # d5x1, d5x2, d5x3, d5x4, d5x5, d5x6, d5x7, d5x8, d5x9, d5x10, d5x11 = net_avg_clean(d5)
+    # zc7x1, zc7x2, zc7x3, zc7x4, zc7x5, zc7x6, zc7x7, zc7x8, zc7x9, zc7x10, zc7x11 = net_avg_clean(zc7)
+    #
+    # d5_zc5_dist1 = torch.norm(d5x1 - zc5x1).item()
+    # d5_zc7_dist1 = torch.norm(zc5x1 - zc7x1).item()
+    # d5_zc5_dist2 = torch.norm(d5x2 - zc5x2).item()
+    # d5_zc7_dist2 = torch.norm(d5x2 - zc7x2).item()
+    # d5_zc5_dist3 = torch.norm(d5x3 - zc5x3).item()
+    # d5_zc7_dist3 = torch.norm(d5x3 - zc7x3).item()
+    # d5_zc5_dist4 = torch.norm(d5x4 - zc5x4).item()
+    # d5_zc7_dist4 = torch.norm(d5x4 - zc7x4).item()
+    # d5_zc5_dist5 = torch.norm(d5x5 - zc5x5).item()
+    # d5_zc7_dist5 = torch.norm(d5x5 - zc7x5).item()
+    # d5_zc5_dist6 = torch.norm(d5x6 - zc5x6).item()
+    # d5_zc7_dist6 = torch.norm(d5x6 - zc7x6).item()
+    # d5_zc5_dist7 = torch.norm(d5x7 - zc5x7).item()
+    # d5_zc7_dist7 = torch.norm(d5x7 - zc7x7).item()
+    # d5_zc5_dist8 = torch.norm(d5x8 - zc5x8).item()
+    # d5_zc7_dist8 = torch.norm(d5x8 - zc7x8).item()
+    # d5_zc5_dist9 = torch.norm(d5x9 - zc5x9).item()
+    # d5_zc7_dist9 = torch.norm(d5x9 - zc7x9).item()
+    # d5_zc5_dist10 = torch.norm(d5x10 - zc5x10).item()
+    # d5_zc7_dist10 = torch.norm(d5x10 - zc7x10).item()
+    # d5_zc5_dist11 = torch.norm(d5x11 - zc5x11).item()
+    # d5_zc7_dist11 = torch.norm(d5x11 - zc7x11).item()
+    #
+    # print("clean model     毒5-干净5         毒5-干净7")
+    # print("layer 1 : ", d5_zc5_dist1, d5_zc7_dist1)
+    # print("layer 2 : ", d5_zc5_dist2, d5_zc7_dist2)
+    # print("layer 3 : ", d5_zc5_dist3, d5_zc7_dist3)
+    # print("layer 4 : ", d5_zc5_dist4, d5_zc7_dist4)
+    # print("layer 5 : ", d5_zc5_dist5, d5_zc7_dist5)
+    # print("layer 6 : ", d5_zc5_dist6, d5_zc7_dist6)
+    # print("layer 7 : ", d5_zc5_dist7, d5_zc7_dist7)
+    # print("layer 8 : ", d5_zc5_dist8, d5_zc7_dist8)
+    # print("layer 9 : ", d5_zc5_dist9, d5_zc7_dist9)
+    # print("layer 10 : ", d5_zc5_dist10, d5_zc7_dist10)
+    # print("layer 11 : ", d5_zc5_dist11, d5_zc7_dist11)
+
 
     logger.info("Test the model performance on the entire task before FL process ... ")
     overall_acc = test_model(net_avg, test_data_ori_loader, device, print_perform=True)
@@ -147,6 +271,16 @@ if __name__ == "__main__":
 
     logger.info("=====Main task test accuracy=====: {}".format(overall_acc))
     logger.info("=====Backdoor task test accuracy=====: {}".format(backdoor_acc))
+
+    # logger.info("Test the model performance on the entire task before FL process ... ")
+    # overall_acc = test_model(net_avg, test_data_ori_loader, device, print_perform=True)
+    # logger.info("Test the model performance on the backdoor task before FL process ... ")
+    # test_model_backdoor(net_avg, test_data_backdoor_loader, device, print_perform=False)
+
+    # logger.info("=====Main task test accuracy=====: {}".format(overall_acc))
+    # logger.info("=====Backdoor task test accuracy=====: {}".format(backdoor_acc))
+
+
 
 
     arguments = {
@@ -173,7 +307,8 @@ if __name__ == "__main__":
         "test_data_ori_loader": test_data_ori_loader,
         "test_data_backdoor_loader": test_data_backdoor_loader,
         "malicious_ratio": args.malicious_ratio,
-        "trigger_label": args.trigger_label,
+        "trigger_ori_label": args.trigger_ori_label,
+        "trigger_tar_label": args.trigger_tar_label,
         "semantic_label": args.semantic_label,
         "poisoned_portion": args.poisoned_portion,
         "attack_mode": args.attack_mode,
